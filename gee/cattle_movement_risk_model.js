@@ -23,223 +23,264 @@
 
 // Define study area (Northwestern South Sudan)
 // Update these coordinates based on your specific area of interest
-var studyArea = ee.Geometry.Rectangle([
-  27.0, 7.5,  // Southwest corner [longitude, latitude]
-  30.5, 10.5  // Northeast corner [longitude, latitude]
-]);
+// === CONFIG ===
+var region = ee.Geometry.Rectangle([27.5, 7.0, 31.0, 9.5]); // NW South Sudan
+var end = ee.Date('2025-01-01');
+var start = end.advance(-35, 'day');
+var histStart = end.advance(-365*5, 'day');
+var histEnd = end.advance(-365, 'day');
 
-// Time period for analysis
-var startDate = '2023-01-01';
-var endDate = '2023-12-31';
+// Determine season (critical for South Sudan's bimodal rainfall)
+var month = end.get('month');
+var season = ee.Algorithms.If(
+  ee.Number(month).gte(4).and(ee.Number(month).lte(10)),
+  'wet_season',
+  'dry_season'
+);
+print('Season:', season);
 
-// Visualization parameters
-var waterVizParams = {min: 0, max: 1, palette: ['red', 'yellow', 'green', 'blue']};
-var vegetationVizParams = {min: 0, max: 0.8, palette: ['brown', 'yellow', 'green']};
-var riskVizParams = {min: 0, max: 1, palette: ['green', 'yellow', 'orange', 'red']};
+// === DATA COLLECTION ===
 
-// =============================================================================
-// DATA SOURCES
-// =============================================================================
+// 1. WATER SOURCES
+var chirps = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY')
+  .filterDate(start, end)
+  .select('precipitation');
 
-/**
- * Key Datasets Used:
- * 
- * 1. Water Availability:
- *    - Surface water extent: JRC Global Surface Water
- *    - Precipitation: CHIRPS (Climate Hazards Group InfraRed Precipitation with Station data)
- *    - Soil moisture: NASA SMAP or ESA CCI Soil Moisture
- * 
- * 2. Vegetation Health:
- *    - NDVI: MODIS Terra/Aqua or Sentinel-2
- *    - EVI: Enhanced Vegetation Index from MODIS
- * 
- * 3. Contextual Data:
- *    - Population density: WorldPop
- *    - Livestock density estimates: FAO GLiPHA or custom datasets
- *    - Historical conflict locations: ACLED (Armed Conflict Location & Event Data)
- */
+var s1 = ee.ImageCollection('COPERNICUS/S1_GRD')
+  .filterDate(start, end)
+  .filterBounds(region)
+  .filter(ee.Filter.eq('instrumentMode','IW'))
+  .select('VV');
 
-// =============================================================================
-// LOAD AND PROCESS ENVIRONMENTAL DATA
-// =============================================================================
+// Permanent water (JRC Global Surface Water)
+var permanentWater = ee.Image('JRC/GSW1_4/GlobalSurfaceWater')
+  .select('occurrence')
+  .clip(region);
 
-/**
- * STEP 1: Calculate Water Scarcity Index
- * Combines precipitation deficit, surface water extent, and soil moisture
- */
-function calculateWaterScarcity(startDate, endDate, region) {
-  // Load CHIRPS precipitation data
-  // var precipitation = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY')
-  //   .filterDate(startDate, endDate)
-  //   .filterBounds(region)
-  //   .select('precipitation');
-  
-  // Calculate precipitation anomaly compared to long-term average
-  // var precipMean = precipitation.mean();
-  // var precipAnomaly = precipitation.mean().subtract(precipMean);
-  
-  // Load surface water data from JRC Global Surface Water
-  // var surfaceWater = ee.Image('JRC/GSW1_4/GlobalSurfaceWater')
-  //   .select('occurrence')
-  //   .clip(region);
-  
-  // Combine indicators into water scarcity index
-  // Lower values = higher scarcity
-  // var waterScarcityIndex = ...
-  
-  // PLACEHOLDER: Return dummy index for demonstration
-  return ee.Image.constant(0.5).clip(region);
-}
+// 2. VEGETATION / FORAGE QUALITY
+var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+  .filterDate(start, end)
+  .filterBounds(region)
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 60))
+  .select(['B4','B8','B11']); // red, nir, swir
 
-/**
- * STEP 2: Calculate Vegetation Stress Index
- * Uses NDVI/EVI to assess grazing quality and availability
- */
-function calculateVegetationStress(startDate, endDate, region) {
-  // Load MODIS NDVI data
-  // var ndvi = ee.ImageCollection('MODIS/006/MOD13A2')
-  //   .filterDate(startDate, endDate)
-  //   .filterBounds(region)
-  //   .select('NDVI')
-  //   .map(function(img) {
-  //     return img.multiply(0.0001); // Scale factor
-  //   });
-  
-  // Calculate NDVI anomaly (current vs. long-term average)
-  // var ndviMean = ndvi.mean();
-  // var ndviAnomaly = ndvi.mean().subtract(ndviMean);
-  
-  // Convert to stress index (lower NDVI = higher stress)
-  // var vegetationStress = ...
-  
-  // PLACEHOLDER: Return dummy index for demonstration
-  return ee.Image.constant(0.5).clip(region);
-}
+// Historical NDVI baseline
+var s2hist = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+  .filterDate(histStart, histEnd)
+  .filterBounds(region)
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 60))
+  .map(function(img){
+    return img.normalizedDifference(['B8','B4']).rename('NDVI');
+  });
+var ndviHistMean = s2hist.mean();
 
-/**
- * STEP 3: Identify High-Risk Convergence Zones
- * Areas with remaining resources become congregation points
- */
-function identifyConvergenceZones(waterIndex, vegetationIndex, region) {
-  // Find areas with relatively better conditions (attractors)
-  // These become potential convergence zones
-  
-  // Calculate combined resource availability
-  // var resourceAvailability = waterIndex.add(vegetationIndex).divide(2);
-  
-  // Identify local maxima (relative resource hotspots)
-  // var convergenceZones = resourceAvailability.focal_max({radius: 5000, units: 'meters'});
-  
-  // PLACEHOLDER: Return dummy convergence zones
-  return ee.Image.constant(0.3).clip(region);
-}
+// 3. TERRAIN
+var srtm = ee.Image('USGS/SRTMGL1_003').clip(region);
+var slope = ee.Terrain.slope(srtm);
 
-/**
- * STEP 4: Calculate Movement Risk Index
- * Combines scarcity, stress, and convergence potential
- */
-function calculateMovementRisk(waterScarcity, vegetationStress, convergenceZones) {
-  // Higher scarcity + higher stress + convergence zones = higher movement risk
-  
-  // Weighted combination of factors
-  // var movementRisk = waterScarcity.multiply(0.4)
-  //   .add(vegetationStress.multiply(0.4))
-  //   .add(convergenceZones.multiply(0.2));
-  
-  // Normalize to 0-1 range
-  // movementRisk = movementRisk.unitScale(0, 1);
-  
-  // PLACEHOLDER: Return dummy risk index
-  return ee.Image.constant(0.6);
-}
+// 4. HUMAN SETTLEMENTS (urbanization)
+// WorldPop population density
+var population = ee.ImageCollection('WorldPop/GP/100m/pop')
+  .filterBounds(region)
+  .sort('system:time_start', false)
+  .first()
+  .clip(region);
 
-// =============================================================================
-// MAIN EXECUTION
-// =============================================================================
+// ESA WorldCover land cover
+var landcover = ee.ImageCollection('ESA/WorldCover/v200')
+  .first()
+  .clip(region);
 
-/**
- * Run the complete risk assessment pipeline
- * 
- * TO USE THIS SCRIPT:
- * 1. Copy this entire script into the Google Earth Engine Code Editor (https://code.earthengine.google.com)
- * 2. Uncomment the data loading sections above
- * 3. Adjust the study area coordinates and date range as needed
- * 4. Run the script
- * 5. View results in the Map panel
- * 6. Export results using the Export functions (commented below)
- */
-function runRiskAssessment() {
-  print('=== South Sudan Cattle Movement Risk Assessment ===');
-  print('Study Area:', studyArea.bounds().getInfo());
-  print('Time Period:', startDate, 'to', endDate);
-  
-  // Calculate environmental indicators
-  var waterScarcity = calculateWaterScarcity(startDate, endDate, studyArea);
-  var vegetationStress = calculateVegetationStress(startDate, endDate, studyArea);
-  var convergenceZones = identifyConvergenceZones(waterScarcity, vegetationStress, studyArea);
-  
-  // Calculate final risk index
-  var movementRisk = calculateMovementRisk(waterScarcity, vegetationStress, convergenceZones);
-  
-  // Visualize results
-  Map.centerObject(studyArea, 7);
-  Map.addLayer(waterScarcity, waterVizParams, 'Water Scarcity Index');
-  Map.addLayer(vegetationStress, vegetationVizParams, 'Vegetation Stress Index');
-  Map.addLayer(convergenceZones, vegetationVizParams, 'Convergence Zones');
-  Map.addLayer(movementRisk, riskVizParams, 'Cattle Movement Risk', true);
-  
-  // Add study area boundary
-  Map.addLayer(studyArea, {color: 'yellow'}, 'Study Area', false);
-  
-  print('Risk Assessment Complete');
-  print('See layers in Map panel');
-  
-  return movementRisk;
-}
+// === DERIVED INDICATORS ===
 
-// =============================================================================
-// EXPORT FUNCTIONS (Optional)
-// =============================================================================
+// A. WATER AVAILABILITY SCORE (0-1, higher = better)
+// Sentinel-1 current water detection
+var s1median = s1.median();
+var currentWater = s1median.lt(-16).rename('current_water'); // tuned threshold
 
-/**
- * Export the risk map to Google Drive or Google Cloud Storage
- * Uncomment and modify as needed
- */
-function exportRiskMap(riskImage) {
-  // Export.image.toDrive({
-  //   image: riskImage,
-  //   description: 'south_sudan_cattle_risk_map',
-  //   folder: 'GEE_Exports',
-  //   region: studyArea,
-  //   scale: 1000, // 1km resolution
-  //   maxPixels: 1e10
-  // });
-}
+// Cumulative rainfall (last 30 days - critical for ephemeral ponds)
+var rain30 = chirps.sum().rename('rain30');
 
-// =============================================================================
-// RUN THE MODEL
-// =============================================================================
+// Distance to permanent water (inverse distance weighted)
+var waterBinary = permanentWater.gt(50).unmask(0); // >50% occurrence = reliable
+var distToWater = waterBinary.fastDistanceTransform().sqrt()
+  .multiply(ee.Image.pixelArea().sqrt()).divide(1000); // convert to km
 
-// Execute the risk assessment
-// Uncomment the line below to run the model
-// var riskMap = runRiskAssessment();
+// Water score: combination of proximity + current availability + recent rain
+var waterProximity = ee.Image(1).divide(distToWater.add(1)).pow(2); // decay function
+var waterScore = waterProximity.multiply(0.5)
+  .add(currentWater.multiply(0.3))
+  .add(rain30.divide(150).clamp(0,1).multiply(0.2)) // 150mm normalization
+  .rename('water_score')
+  .clamp(0, 1);
 
-// Optionally export results
-// exportRiskMap(riskMap);
+// B. FORAGE QUALITY SCORE (0-1, higher = better)
+var ndviNow = s2
+  .map(function(img){ 
+    return img.normalizedDifference(['B8','B4'])
+      .rename('NDVI')
+      .copyProperties(img,['system:time_start']); 
+  })
+  .mean();
 
-/**
- * NOTES FOR USERS:
- * 
- * 1. This is a demonstration/template script. The actual data loading and 
- *    processing code is commented out as placeholders.
- * 
- * 2. To implement the full model, you will need:
- *    - Access to Google Earth Engine (sign up at https://earthengine.google.com)
- *    - Uncomment and complete the data loading sections
- *    - Calibrate the weights and thresholds based on ground truth data
- *    - Validate results with local knowledge and conflict event data
- * 
- * 3. For questions or collaboration opportunities, refer to the repository README
- * 
- * 4. See /docs folder for detailed methodology and data source information
- */
+// NDVI anomaly (positive = better than average)
+var ndviAnom = ndviNow.subtract(ndviHistMean);
+
+// Moisture-adjusted vegetation index (accounts for senescent vegetation)
+var msavi = s2.map(function(img){
+  var nir = img.select('B8');
+  var red = img.select('B4');
+  return nir.multiply(2).add(1)
+    .subtract(
+      nir.multiply(2).add(1).pow(2)
+        .subtract(nir.subtract(red).multiply(8))
+        .sqrt()
+    )
+    .divide(2)
+    .rename('MSAVI');
+}).mean();
+
+// Forage score: NDVI quality + greenness anomaly
+var forageScore = ndviNow.divide(0.7).clamp(0,1).multiply(0.6) // normalize by regional max ~0.7
+  .add(ndviAnom.add(0.15).divide(0.3).clamp(0,1).multiply(0.4)) // anomaly bonus
+  .rename('forage_score')
+  .clamp(0, 1);
+
+// C. LAND SUITABILITY SCORE (0-1, higher = better)
+// Grassland preference (ESA classes: 30=herbaceous, 40=cropland)
+var grassland = landcover.eq(30).or(landcover.eq(40)); // grassland or cropland
+var shrubland = landcover.eq(20); // shrubland (moderate suitability)
+var forest = landcover.gte(10).and(landcover.lte(12)); // trees (low suitability)
+
+var habitatScore = grassland.multiply(1.0)
+  .add(shrubland.multiply(0.6))
+  .add(forest.multiply(0.2))
+  .unmask(0.5) // unknown areas = moderate
+  .rename('habitat_score');
+
+// Slope suitability (cattle avoid steep slopes >15°)
+var slopeScore = ee.Image(1).subtract(slope.divide(30).clamp(0,1))
+  .rename('slope_score');
+
+// D. HUMAN INFLUENCE SCORE (-0.5 to +0.5)
+// Low density = slight attraction (services, security)
+// High density = strong repulsion (conflict, space)
+var popDensity = population.divide(100).clamp(0,10); // people per hectare
+var humanScore = popDensity.expression(
+  "(pop < 0.5) ? pop * 0.2 : -0.5 * (pop - 0.5) / 9.5", // attraction up to 50/km², then repulsion
+  {pop: popDensity}
+).rename('human_influence');
+
+// E. SEASONAL ADJUSTMENT
+// Dry season: water proximity weight increases dramatically
+// Wet season: forage quality matters more, water less critical
+var waterWeight = ee.Number(ee.Algorithms.If(ee.String(season).equals('dry_season'), 0.45, 0.25));
+var forageWeight = ee.Number(ee.Algorithms.If(ee.String(season).equals('dry_season'), 0.25, 0.40));
+var habitatWeight = ee.Number(0.15);
+var slopeWeight = ee.Number(0.10);
+var humanWeight = ee.Number(0.05);
+
+print('Weights - Water:', waterWeight, 'Forage:', forageWeight);
+
+// === FINAL CATTLE LIKELIHOOD MODEL ===
+var cattleLikelihood = waterScore.multiply(waterWeight)
+  .add(forageScore.multiply(forageWeight))
+  .add(habitatScore.multiply(habitatWeight))
+  .add(slopeScore.multiply(slopeWeight))
+  .add(humanScore.multiply(humanWeight))
+  .rename('cattle_likelihood')
+  .clip(region);
+
+// Create exclusion zones (water bodies + dense urban)
+var urbanMask = population.lt(500); // <50k people per km²
+var waterExclude = permanentWater.lt(80); // NOT permanent water (true where ok for cattle)
+
+// Set excluded areas to 0 probability (not masked, explicit zero)
+var finalLikelihood = cattleLikelihood
+  .where(urbanMask.not(), 0)  // urban areas = 0 probability
+  .where(waterExclude.not(), 0)  // water bodies = 0 probability
+  .rename('cattle_likelihood');
+
+// === VISUALIZATION ===
+Map.centerObject(region, 8);
+
+// Individual factors
+Map.addLayer(waterScore, {min:0, max:1, palette:['red','yellow','cyan']}, 'Water Availability', false);
+Map.addLayer(forageScore, {min:0, max:1, palette:['brown','yellow','green']}, 'Forage Quality', false);
+Map.addLayer(ndviNow, {min:0, max:0.6, palette:['ffffff','00ff00']}, 'Current NDVI', false);
+Map.addLayer(distToWater, {min:0, max:20, palette:['blue','white','red']}, 'Distance to Water (km)', false);
+
+// WATER BODIES LAYER - Blue visualization showing water locations
+var waterBodies = permanentWater.gt(80); // Permanent water bodies
+Map.addLayer(waterBodies.updateMask(waterBodies), 
+  {palette:['0000ff']}, 'Water Bodies (Excluded Zones)');
+
+// Alternative: More detailed water visualization
+Map.addLayer(permanentWater.updateMask(permanentWater.gt(50)), 
+  {min:50, max:100, palette:['lightblue','darkblue']}, 'Permanent Water (Occurrence %)', false);
+
+// Final prediction (includes 0 values for water, but water layer shows on top)
+Map.addLayer(finalLikelihood, 
+  {min:0, max:1, palette:['440154','31688e','35b779','fde724']}, 
+  'Cattle Likelihood (High=Yellow)');
+
+// High-probability zones (top 20%)
+var highProbability = finalLikelihood.gt(0.65);
+Map.addLayer(highProbability.updateMask(highProbability), 
+  {palette:['red']}, 'High Probability Zones (>0.65)', false);
+
+// === STATISTICS ===
+var stats = finalLikelihood.reduceRegion({
+  reducer: ee.Reducer.mean().combine({
+    reducer2: ee.Reducer.stdDev(),
+    sharedInputs: true
+  }),
+  geometry: region,
+  scale: 1000,
+  maxPixels: 1e10
+});
+print('Cattle Likelihood Stats:', stats);
+
+// Area of high-probability zones (excluding water/urban zeros)
+var validArea = finalLikelihood.gt(0); // Only count non-zero areas
+var areaStats = highProbability.multiply(ee.Image.pixelArea()).divide(1e6)
+  .reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: region,
+    scale: 1000,
+    maxPixels: 1e10
+  });
+print('High Probability Area (km²):', areaStats);
+
+// === EXPORT ===
+// Export includes 0 values for water bodies (not nodata)
+Export.image.toDrive({
+  image: finalLikelihood.float(),
+  description: 'cattle_likelihood_prediction',
+  region: region,
+  scale: 500,
+  maxPixels: 1e11,
+  crs: 'EPSG:4326'
+});
+
+// Export classification with water as Class 0
+var classes = finalLikelihood.expression(
+  "(b1 == 0) ? 0 : (b1 < 0.3) ? 1 : (b1 < 0.5) ? 2 : (b1 < 0.7) ? 3 : 4"
+).byte();
+
+Export.image.toDrive({
+  image: classes,
+  description: 'cattle_likelihood_classes',
+  region: region,
+  scale: 500,
+  maxPixels: 1e11
+});
+
+// OPTIONAL: Export water bodies mask separately for web overlay
+Export.image.toDrive({
+  image: waterBodies.byte(),
+  description: 'water_bodies_mask',
+  region: region,
+  scale: 500,
+  maxPixels: 1e11
+});
