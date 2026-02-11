@@ -159,24 +159,19 @@ var humanScore = popDensity.expression(
 .unmask(0);
 
 // --- Intermediate layer validation ---
-var validationReducer = ee.Reducer.minMax();
-var validationParams = {geometry: studyRegion, scale: 5000, maxPixels: 1e10, bestEffort: true};
+var validationParams = {
+  reducer: ee.Reducer.minMax(),
+  geometry: studyRegion,
+  scale: 5000,
+  maxPixels: 1e10,
+  bestEffort: true
+};
 
-print('Water score min/max:',
-  waterScore.reduceRegion(
-    {reducer: validationReducer, geometry: studyRegion, scale: 5000, maxPixels: 1e10, bestEffort: true}));
-print('Forage score min/max:',
-  forageScore.reduceRegion(
-    {reducer: validationReducer, geometry: studyRegion, scale: 5000, maxPixels: 1e10, bestEffort: true}));
-print('Habitat score min/max:',
-  habitatScore.reduceRegion(
-    {reducer: validationReducer, geometry: studyRegion, scale: 5000, maxPixels: 1e10, bestEffort: true}));
-print('Slope score min/max:',
-  slopeScore.reduceRegion(
-    {reducer: validationReducer, geometry: studyRegion, scale: 5000, maxPixels: 1e10, bestEffort: true}));
-print('Human influence min/max:',
-  humanScore.reduceRegion(
-    {reducer: validationReducer, geometry: studyRegion, scale: 5000, maxPixels: 1e10, bestEffort: true}));
+print('Water score min/max:',    waterScore.reduceRegion(validationParams));
+print('Forage score min/max:',   forageScore.reduceRegion(validationParams));
+print('Habitat score min/max:',  habitatScore.reduceRegion(validationParams));
+print('Slope score min/max:',    slopeScore.reduceRegion(validationParams));
+print('Human influence min/max:', humanScore.reduceRegion(validationParams));
 
 // E. SEASONAL WEIGHTING
 //   Dry season emphasises water; wet season emphasises forage.
@@ -211,15 +206,14 @@ finalLikelihood = finalLikelihood.reproject({crs: exportCrs, scale: exportScale}
 
 // Validate final likelihood range
 print('Final likelihood min/max:',
-  finalLikelihood.reduceRegion(
-    {reducer: validationReducer, geometry: studyRegion, scale: 5000, maxPixels: 1e10, bestEffort: true}));
+  finalLikelihood.reduceRegion(validationParams));
 
 // === CLASSIFICATION FUNCTION ===
 // Deterministic, reusable classifier.  Uses additive threshold gates so every
 // pixel falls into exactly one class with no gaps or overlaps.
 //
 // Class 0 : Excluded        (likelihood == 0)
-// Class 1 : Low             (0   < likelihood < 0.3)
+// Class 1 : Low             (0 < likelihood < 0.3)
 // Class 2 : Medium-Low      (0.3 <= likelihood < 0.5)
 // Class 3 : Medium-High     (0.5 <= likelihood < 0.7)
 // Class 4 : High            (likelihood >= 0.7)
