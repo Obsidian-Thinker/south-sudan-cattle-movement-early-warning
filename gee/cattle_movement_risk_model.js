@@ -1,130 +1,139 @@
-// === CONFIG ===
-// Full South Sudan bounding box
-var region = ee.Geometry.Rectangle([31.0, 4.5, 32.0, 5.0]); // Just Juba
-var end = ee.Date('2025-01-01');
-var start = end.advance(-90, 'day');
-var histStart = end.advance(-365*3, 'day');
-var histEnd = end.advance(-365, 'day');
+// ============================================================================
+// South Sudan Cattle Movement Risk Model (Google Earth Engine)
+// ============================================================================
+// Predicts cattle movement likelihood using environmental indicators:
+//   Water availability, forage quality, land suitability, slope, and human
+//   influence — weighted by season (dry vs. wet).
+//
+// Outputs:
+//   1. Continuous cattle likelihood raster (0–1)
+//   2. Classified risk map (4 classes, deterministic thresholds)
+//   3. Permanent water bodies mask
+//
+// All exports: GeoTIFF, EPSG:4326, 500 m resolution.
+// ============================================================================
 
-// Determine season
-var month = end.get('month');
+// === CONFIG ===
+var studyRegion = ee.Geometry.Rectangle([31.0, 4.5, 32.0, 5.0]); // Juba study area
+var analysisEnd = ee.Date('2025-01-01');
+var analysisStart = analysisEnd.advance(-90, 'day');           // 90-day lookback
+var historicalStart = analysisEnd.advance(-365 * 3, 'day');    // 3-year historical baseline start
+var historicalEnd = analysisEnd.advance(-365, 'day');           // 1-year ago baseline end
+
+// Export configuration
+var exportScale = 500;   // metres
+var exportCrs = 'EPSG:4326';
+
+// Determine season (Apr–Oct = wet, Nov–Mar = dry)
+var month = analysisEnd.get('month');
 var season = ee.Algorithms.If(
-  ee.Number(month).gte(4).and(ee.Number(month).lte(10)),
-  'wet_season',
-  'dry_season'
+  ee.Number(month).gte(4).and(ee.Number(month).lte(10)),
+  'wet_season',
+  'dry_season'
 );
-print(season);
+print('Season:', season);
 
 // === DATA COLLECTION ===
 
 // 1. WATER SOURCES
 var chirps = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY')
-  .filterDate(start, end)
-  .filterBounds(region)  // OPTIMIZATION: Filter by bounds early
-  .select('precipitation');
+  .filterDate(analysisStart, analysisEnd)
+  .filterBounds(studyRegion)
+  .select('precipitation');
 
 var s1 = ee.ImageCollection('COPERNICUS/S1_GRD')
-  .filterDate(start, end)
-  .filterBounds(region)
-  .filter(ee.Filter.eq('instrumentMode','IW'))
-  .filter(ee.Filter.eq('orbitProperties_pass', 'DESCENDING')) // OPTIMIZATION: Use only descending passes
-  .select('VV');
+  .filterDate(analysisStart, analysisEnd)
+  .filterBounds(studyRegion)
+  .filter(ee.Filter.eq('instrumentMode', 'IW'))
+  .filter(ee.Filter.eq('orbitProperties_pass', 'DESCENDING'))
+  .select('VV');
 
 var permanentWater = ee.Image('JRC/GSW1_4/GlobalSurfaceWater')
-  .select('occurrence')
-  .clip(region);
+  .select('occurrence')
+  .clip(studyRegion);
 
-// 2. VEGETATION - LANDSAT 8/9 with OPTIMIZATION
+// 2. VEGETATION — Landsat 8 with cloud filter
+var computeNDVI = function(img) {
+  var nir = img.select('SR_B5').multiply(0.0000275).add(-0.2);
+  var red = img.select('SR_B4').multiply(0.0000275).add(-0.2);
+  var ndvi = nir.subtract(red).divide(nir.add(red)).rename('NDVI');
+  return ndvi.copyProperties(img, ['system:time_start']);
+};
+
 var landsat = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
-  .filterDate(start, end)
-  .filterBounds(region)
-  .filter(ee.Filter.lt('CLOUD_COVER', 70)) // OPTIMIZATION: Stricter cloud threshold
-  .select(['SR_B4', 'SR_B5']) // OPTIMIZATION: Only select needed bands upfront
-  .map(function(img) {
-    var nir = img.select('SR_B5').multiply(0.0000275).add(-0.2);
-    var red = img.select('SR_B4').multiply(0.0000275).add(-0.2);
-    var ndvi = nir.subtract(red).divide(nir.add(red)).rename('NDVI');
-    return ndvi.copyProperties(img, ['system:time_start']); // OPTIMIZATION: Return only NDVI
-  });
+  .filterDate(analysisStart, analysisEnd)
+  .filterBounds(studyRegion)
+  .filter(ee.Filter.lt('CLOUD_COVER', 70))
+  .select(['SR_B4', 'SR_B5'])
+  .map(computeNDVI);
 
 var landsatHist = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
-  .filterDate(histStart, histEnd)
-  .filterBounds(region)
-  .filter(ee.Filter.lt('CLOUD_COVER', 70))
-  .select(['SR_B4', 'SR_B5'])
-  .map(function(img) {
-    var nir = img.select('SR_B5').multiply(0.0000275).add(-0.2);
-    var red = img.select('SR_B4').multiply(0.0000275).add(-0.2);
-    var ndvi = nir.subtract(red).divide(nir.add(red)).rename('NDVI');
-    return ndvi.copyProperties(img, ['system:time_start']);
-  });
+  .filterDate(historicalStart, historicalEnd)
+  .filterBounds(studyRegion)
+  .filter(ee.Filter.lt('CLOUD_COVER', 70))
+  .select(['SR_B4', 'SR_B5'])
+  .map(computeNDVI);
 
-print(landsat.size());
-print(landsatHist.size());
+print('Landsat current scene count:', landsat.size());
+print('Landsat historical scene count:', landsatHist.size());
 
-// 3. TERRAIN - OPTIMIZATION: Resample to 500m to match export resolution
+// 3. TERRAIN — resampled to export resolution
 var srtm = ee.Image('USGS/SRTMGL1_003')
-  .clip(region)
-  .reproject({crs: 'EPSG:4326', scale: 500}); // OPTIMIZATION: Coarsen resolution
+  .clip(studyRegion)
+  .reproject({crs: exportCrs, scale: exportScale});
 var slope = ee.Terrain.slope(srtm);
 
-// 4. HUMAN SETTLEMENTS - OPTIMIZATION: Resample population to 500m
+// 4. HUMAN SETTLEMENTS — resampled to export resolution
 var population = ee.ImageCollection('WorldPop/GP/100m/pop')
-  .filterBounds(region)
-  .sort('system:time_start', false)
-  .first()
-  .clip(region)
-  .reproject({crs: 'EPSG:4326', scale: 500}); // OPTIMIZATION: Resample from 100m to 500m
+  .filterBounds(studyRegion)
+  .sort('system:time_start', false)
+  .first()
+  .clip(studyRegion)
+  .reproject({crs: exportCrs, scale: exportScale});
 
 var landcover = ee.ImageCollection('ESA/WorldCover/v200')
-  .first()
-  .clip(region);
+  .first()
+  .clip(studyRegion);
 
 // === DERIVED INDICATORS ===
 
 // A. WATER AVAILABILITY SCORE
-var s1median = s1.median();
-var currentWater = s1median.lt(-16).rename('current_water');
+var s1Median = s1.median();
+var currentWater = s1Median.lt(-16).rename('current_water');
 
-var rain30 = chirps.sum().rename('rain30');
+var rain30 = chirps.sum().rename('rain_30d');
 
 var waterBinary = permanentWater.gt(50).unmask(0);
 var distToWater = waterBinary.fastDistanceTransform().sqrt()
-  .multiply(ee.Image.pixelArea().sqrt()).divide(1000);
+  .multiply(ee.Image.pixelArea().sqrt()).divide(1000);
 
 var waterProximity = ee.Image(1).divide(distToWater.add(1)).pow(2);
 var waterScore = waterProximity.multiply(0.5)
-  .add(currentWater.multiply(0.3))
-  .add(rain30.divide(150).clamp(0,1).multiply(0.2))
-  .rename('water_score')
-  .clamp(0, 1);
+  .add(currentWater.multiply(0.3))
+  .add(rain30.divide(150).clamp(0, 1).multiply(0.2))
+  .rename('water_score')
+  .clamp(0, 1);
 
-// B. FORAGE QUALITY SCORE - OPTIMIZATION: Use percentile instead of median for speed
-var ndviNow = landsat.reduce(ee.Reducer.percentile([50])) // OPTIMIZATION: Percentile is faster than median
-  .rename('NDVI')
-  .clip(region);
+// B. FORAGE QUALITY SCORE
+var ndviCurrent = landsat.reduce(ee.Reducer.percentile([50]))
+  .rename('NDVI')
+  .clip(studyRegion);
 
-var ndviHistMean = landsatHist.reduce(ee.Reducer.percentile([50]))
-  .rename('NDVI')
-  .clip(region);
+var ndviHistorical = landsatHist.reduce(ee.Reducer.percentile([50]))
+  .rename('NDVI')
+  .clip(studyRegion);
 
-// Clamp NDVI to valid range
-ndviNow = ndviNow.clamp(-1, 1).unmask(0.3);
-ndviHistMean = ndviHistMean.clamp(-1, 1).unmask(0.3);
+// Clamp NDVI to valid range and fill gaps
+ndviCurrent = ndviCurrent.clamp(-1, 1).unmask(0.3);
+ndviHistorical = ndviHistorical.clamp(-1, 1).unmask(0.3);
 
-// NDVI anomaly
-var ndviAnom = ndviNow.subtract(ndviHistMean).clamp(-0.5, 0.5);
+var ndviAnomaly = ndviCurrent.subtract(ndviHistorical).clamp(-0.5, 0.5);
 
-// Forage score
-var forageScore = ndviNow.add(1).divide(2).multiply(0.7)
-  .add(ndviAnom.add(0.15).divide(0.3).clamp(0,1).multiply(0.3))
-  .rename('forage_score')
-  .clamp(0, 1)
-  .unmask(0.3);
-
-// REMOVE DIAGNOSTIC PRINTS FOR SPEED - Comment these out for production
-// print(ndviNow.reduceRegion({reducer: ee.Reducer.mean(), geometry: region, scale: 5000, maxPixels: 1e10}));
-// print(forageScore.reduceRegion({reducer: ee.Reducer.mean(), geometry: region, scale: 5000, maxPixels: 1e10}));
+var forageScore = ndviCurrent.add(1).divide(2).multiply(0.7)
+  .add(ndviAnomaly.add(0.15).divide(0.3).clamp(0, 1).multiply(0.3))
+  .rename('forage_score')
+  .clamp(0, 1)
+  .unmask(0.3);
 
 // C. LAND SUITABILITY SCORE
 var grassland = landcover.eq(30).or(landcover.eq(40));
@@ -132,156 +141,199 @@ var shrubland = landcover.eq(20);
 var forest = landcover.gte(10).and(landcover.lte(12));
 
 var habitatScore = grassland.multiply(1.0)
-  .add(shrubland.multiply(0.6))
-  .add(forest.multiply(0.2))
-  .unmask(0.5)
-  .rename('habitat_score');
+  .add(shrubland.multiply(0.6))
+  .add(forest.multiply(0.2))
+  .unmask(0.5)
+  .rename('habitat_score');
 
-var slopeScore = ee.Image(1).subtract(slope.divide(30).clamp(0,1))
-  .rename('slope_score');
+var slopeScore = ee.Image(1).subtract(slope.divide(30).clamp(0, 1))
+  .rename('slope_score');
 
 // D. HUMAN INFLUENCE SCORE
-var popDensity = population.divide(100).clamp(0,10).unmask(0);
+var popDensity = population.divide(100).clamp(0, 10).unmask(0);
 
 var humanScore = popDensity.expression(
-  "(pop < 0.5) ? pop * 0.2 : -0.5 * (pop - 0.5) / 9.5",
-  {pop: popDensity}
+  "(pop < 0.5) ? pop * 0.2 : -0.5 * (pop - 0.5) / 9.5",
+  {pop: popDensity}
 ).rename('human_influence')
 .unmask(0);
 
-// E. SEASONAL ADJUSTMENT
-var waterWeight = ee.Number(ee.Algorithms.If(ee.String(season).equals('dry_season'), 0.45, 0.25));
+// --- Intermediate layer validation ---
+var validationReducer = ee.Reducer.minMax();
+var validationParams = {geometry: studyRegion, scale: 5000, maxPixels: 1e10, bestEffort: true};
+
+print('Water score min/max:',
+  waterScore.reduceRegion(
+    {reducer: validationReducer, geometry: studyRegion, scale: 5000, maxPixels: 1e10, bestEffort: true}));
+print('Forage score min/max:',
+  forageScore.reduceRegion(
+    {reducer: validationReducer, geometry: studyRegion, scale: 5000, maxPixels: 1e10, bestEffort: true}));
+print('Habitat score min/max:',
+  habitatScore.reduceRegion(
+    {reducer: validationReducer, geometry: studyRegion, scale: 5000, maxPixels: 1e10, bestEffort: true}));
+print('Slope score min/max:',
+  slopeScore.reduceRegion(
+    {reducer: validationReducer, geometry: studyRegion, scale: 5000, maxPixels: 1e10, bestEffort: true}));
+print('Human influence min/max:',
+  humanScore.reduceRegion(
+    {reducer: validationReducer, geometry: studyRegion, scale: 5000, maxPixels: 1e10, bestEffort: true}));
+
+// E. SEASONAL WEIGHTING
+//   Dry season emphasises water; wet season emphasises forage.
+var waterWeight  = ee.Number(ee.Algorithms.If(ee.String(season).equals('dry_season'), 0.45, 0.25));
 var forageWeight = ee.Number(ee.Algorithms.If(ee.String(season).equals('dry_season'), 0.25, 0.40));
 var habitatWeight = ee.Number(0.15);
-var slopeWeight = ee.Number(0.10);
-var humanWeight = ee.Number(0.05);
+var slopeWeight   = ee.Number(0.10);
+var humanWeight   = ee.Number(0.05);
 
-print(waterWeight);
-print(forageWeight);
+print('Weights — water:', waterWeight, 'forage:', forageWeight);
 
 // === FINAL CATTLE LIKELIHOOD MODEL ===
 var cattleLikelihood = waterScore.multiply(waterWeight)
-  .add(forageScore.multiply(forageWeight))
-  .add(habitatScore.multiply(habitatWeight))
-  .add(slopeScore.multiply(slopeWeight))
-  .add(humanScore.multiply(humanWeight))
-  .rename('cattle_likelihood')
-  .clip(region);
+  .add(forageScore.multiply(forageWeight))
+  .add(habitatScore.multiply(habitatWeight))
+  .add(slopeScore.multiply(slopeWeight))
+  .add(humanScore.multiply(humanWeight))
+  .rename('cattle_likelihood')
+  .clip(studyRegion);
 
-// REMOVE DIAGNOSTIC PRINTS FOR PRODUCTION SPEED
-// print(waterScore.reduceRegion({reducer: ee.Reducer.mean(), geometry: region, scale: 5000, maxPixels: 1e10}));
-// print(habitatScore.reduceRegion({reducer: ee.Reducer.mean(), geometry: region, scale: 5000, maxPixels: 1e10}));
-// print(slopeScore.reduceRegion({reducer: ee.Reducer.mean(), geometry: region, scale: 5000, maxPixels: 1e10}));
-// print(humanScore.reduceRegion({reducer: ee.Reducer.mean(), geometry: region, scale: 5000, maxPixels: 1e10}));
-// print(cattleLikelihood.reduceRegion({reducer: ee.Reducer.mean(), geometry: region, scale: 5000, maxPixels: 1e10}));
+// Exclusion zones — set excluded areas to 0
+var urbanMask = population.lt(500);          // mask out dense settlements
+var waterExclude = permanentWater.lt(80);    // mask out permanent water
 
-// Create exclusion zones
-var urbanMask = population.lt(500);
-var waterExclude = permanentWater.lt(80);
-
-// Set excluded areas to 0 probability
 var finalLikelihood = cattleLikelihood
-  .where(urbanMask.not(), 0)
-  .where(waterExclude.not(), 0)
-  .rename('cattle_likelihood');
+  .where(urbanMask.not(), 0)
+  .where(waterExclude.not(), 0)
+  .rename('cattle_likelihood');
 
-// OPTIMIZATION: Reproject final output to consistent CRS and scale
-finalLikelihood = finalLikelihood.reproject({crs: 'EPSG:4326', scale: 500});
+// Reproject to consistent CRS and resolution
+finalLikelihood = finalLikelihood.reproject({crs: exportCrs, scale: exportScale});
+
+// Validate final likelihood range
+print('Final likelihood min/max:',
+  finalLikelihood.reduceRegion(
+    {reducer: validationReducer, geometry: studyRegion, scale: 5000, maxPixels: 1e10, bestEffort: true}));
+
+// === CLASSIFICATION FUNCTION ===
+// Deterministic, reusable classifier.  Uses additive threshold gates so every
+// pixel falls into exactly one class with no gaps or overlaps.
+//
+// Class 0 : Excluded        (likelihood == 0)
+// Class 1 : Low             (0   < likelihood < 0.3)
+// Class 2 : Medium-Low      (0.3 <= likelihood < 0.5)
+// Class 3 : Medium-High     (0.5 <= likelihood < 0.7)
+// Class 4 : High            (likelihood >= 0.7)
+//
+// The additive approach works because each .gte() evaluates to 0 or 1:
+//   class = gt(0) + gte(0.3) + gte(0.5) + gte(0.7)
+// A pixel at 0.6 scores: 1 + 1 + 1 + 0 = 3 (Medium-High). ✓
+
+var classifyLikelihood = function(likelihoodImage) {
+  return likelihoodImage.gt(0)
+    .add(likelihoodImage.gte(0.3))
+    .add(likelihoodImage.gte(0.5))
+    .add(likelihoodImage.gte(0.7))
+    .byte()
+    .rename('cattle_class');
+};
+
+var cattleClasses = classifyLikelihood(finalLikelihood)
+  .reproject({crs: exportCrs, scale: exportScale});
+
+// Validate classification: print pixel counts per class via histogram
+print('Classification histogram:',
+  cattleClasses.reduceRegion({
+    reducer: ee.Reducer.frequencyHistogram(),
+    geometry: studyRegion,
+    scale: 5000,
+    maxPixels: 1e10,
+    bestEffort: true
+  }));
 
 // === VISUALIZATION ===
-Map.centerObject(region, 7);
+Map.centerObject(studyRegion, 7);
 
-// OPTIMIZATION: Reduce number of visible layers - too many layers slow down rendering
-// Only show the most important layers by default
-
-// Water bodies
 var waterBodies = permanentWater.gt(80);
 Map.addLayer(waterBodies.updateMask(waterBodies),
-  {palette:['0000ff']}, 'Water Bodies', true);
+  {palette: ['0000ff']}, 'Water Bodies', true);
 
-// Final prediction
 Map.addLayer(finalLikelihood,
-  {min:0, max:1, palette:['440154','31688e','35b779','fde724']},
-  'Cattle Likelihood', true);
+  {min: 0, max: 1, palette: ['440154', '31688e', '35b779', 'fde724']},
+  'Cattle Likelihood', true);
 
-// All other layers set to false (toggle on manually if needed)
-Map.addLayer(ndviNow, {min:0, max:0.6, palette:['ffffff','00ff00']}, 'NDVI', false);
-Map.addLayer(waterScore, {min:0, max:1, palette:['red','yellow','cyan']}, 'Water', false);
-Map.addLayer(forageScore, {min:0, max:1, palette:['brown','yellow','green']}, 'Forage', false);
-Map.addLayer(distToWater, {min:0, max:20, palette:['blue','white','red']}, 'Dist to Water', false);
+// Toggle-off layers (enable manually if needed)
+Map.addLayer(ndviCurrent, {min: 0, max: 0.6, palette: ['ffffff', '00ff00']}, 'NDVI', false);
+Map.addLayer(waterScore, {min: 0, max: 1, palette: ['red', 'yellow', 'cyan']}, 'Water Score', false);
+Map.addLayer(forageScore, {min: 0, max: 1, palette: ['brown', 'yellow', 'green']}, 'Forage Score', false);
+Map.addLayer(distToWater, {min: 0, max: 20, palette: ['blue', 'white', 'red']}, 'Distance to Water', false);
 
-// High-probability zones
 var highProbability = finalLikelihood.gt(0.65);
 Map.addLayer(highProbability.updateMask(highProbability),
-  {palette:['red']}, 'High Probability', false);
+  {palette: ['red']}, 'High Probability', false);
 
-// === STATISTICS - Keep only essential ones ===
+// === SUMMARY STATISTICS ===
 var stats = finalLikelihood.reduceRegion({
-  reducer: ee.Reducer.mean().combine({
-    reducer2: ee.Reducer.stdDev(),
-    sharedInputs: true
-  }),
-  geometry: region,
-  scale: 5000, // OPTIMIZATION: Coarser scale for stats (faster)
-  maxPixels: 1e10,
-  bestEffort: true // OPTIMIZATION: Allow approximation for speed
+  reducer: ee.Reducer.mean().combine({
+    reducer2: ee.Reducer.stdDev(),
+    sharedInputs: true
+  }),
+  geometry: studyRegion,
+  scale: 5000,
+  maxPixels: 1e10,
+  bestEffort: true
 });
-print(stats);
+print('Likelihood statistics (mean / stdDev):', stats);
 
 var areaStats = highProbability.multiply(ee.Image.pixelArea()).divide(1e6)
-  .reduceRegion({
-    reducer: ee.Reducer.sum(),
-    geometry: region,
-    scale: 5000, // OPTIMIZATION: Coarser scale
-    maxPixels: 1e10,
-    bestEffort: true
-  });
-print(areaStats);
+  .reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: studyRegion,
+    scale: 5000,
+    maxPixels: 1e10,
+    bestEffort: true
+  });
+print('High-probability area (km²):', areaStats);
 
-// === EXPORT - OPTIMIZED ===
+// === EXPORTS (GeoTIFF, EPSG:4326, 500 m) ===
+
+// 1. Continuous likelihood surface
 Export.image.toDrive({
-  image: finalLikelihood.float(),
-  description: 'south_sudan_cattle_likelihood_full',
-  region: region,
-  scale: 500,
-  maxPixels: 1e11,
-  crs: 'EPSG:4326',
-  fileFormat: 'GeoTIFF',
-  formatOptions: {
-    cloudOptimized: true // OPTIMIZATION: Cloud-optimized GeoTIFF for faster web access
-  }
+  image: finalLikelihood.float(),
+  description: 'south_sudan_cattle_likelihood_full',
+  region: studyRegion,
+  scale: exportScale,
+  maxPixels: 1e11,
+  crs: exportCrs,
+  fileFormat: 'GeoTIFF',
+  formatOptions: {
+    cloudOptimized: true
+  }
 });
 
-// Export classification
-var classes = ee.Image(0)
-  .where(finalLikelihood.gt(0).and(finalLikelihood.lt(0.3)), 1)
-  .where(finalLikelihood.gte(0.3).and(finalLikelihood.lt(0.5)), 2)
-  .where(finalLikelihood.gte(0.5).and(finalLikelihood.lt(0.7)), 3)
-  .where(finalLikelihood.gte(0.7), 4)
-  .byte()
-  .rename('cattle_class')
-  .reproject({crs: 'EPSG:4326', scale: 500}); // OPTIMIZATION: Consistent projection
-
+// 2. Classified risk map (4 classes)
 Export.image.toDrive({
-  image: classes,
-  description: 'south_sudan_cattle_classes_full',
-  region: region,
-  scale: 500,
-  maxPixels: 1e11,
-  fileFormat: 'GeoTIFF',
-  formatOptions: {
-    cloudOptimized: true
-  }
+  image: cattleClasses,
+  description: 'south_sudan_cattle_classes_full',
+  region: studyRegion,
+  scale: exportScale,
+  maxPixels: 1e11,
+  crs: exportCrs,
+  fileFormat: 'GeoTIFF',
+  formatOptions: {
+    cloudOptimized: true
+  }
 });
 
+// 3. Permanent water bodies mask
 Export.image.toDrive({
-  image: waterBodies.byte().reproject({crs: 'EPSG:4326', scale: 500}),
-  description: 'south_sudan_water_bodies_full',
-  region: region,
-  scale: 500,
-  maxPixels: 1e11,
-  fileFormat: 'GeoTIFF',
-  formatOptions: {
-    cloudOptimized: true
-  }
+  image: waterBodies.byte().reproject({crs: exportCrs, scale: exportScale}),
+  description: 'south_sudan_water_bodies_full',
+  region: studyRegion,
+  scale: exportScale,
+  maxPixels: 1e11,
+  crs: exportCrs,
+  fileFormat: 'GeoTIFF',
+  formatOptions: {
+    cloudOptimized: true
+  }
 });

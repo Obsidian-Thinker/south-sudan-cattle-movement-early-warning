@@ -106,19 +106,53 @@ In widespread scarcity, pastoralists move toward areas with *relatively* better 
 
 **Purpose**: Generate final risk map combining all factors
 
-**Weighted Formula**:
+**Weighted Formula (seasonal)**:
+
+The model applies season-dependent weights to five sub-scores:
+
+| Factor            | Dry-season weight | Wet-season weight |
+|-------------------|:-----------------:|:-----------------:|
+| Water availability| 0.45              | 0.25              |
+| Forage quality    | 0.25              | 0.40              |
+| Habitat suitability| 0.15             | 0.15              |
+| Slope             | 0.10              | 0.10              |
+| Human influence   | 0.05              | 0.05              |
+
 ```
-Movement_Risk = (Water_Scarcity × 0.4) + 
-                (Vegetation_Stress × 0.4) + 
-                (Convergence_Potential × 0.2)
+Cattle_Likelihood = (Water_Score × W_water) +
+                    (Forage_Score × W_forage) +
+                    (Habitat_Score × 0.15) +
+                    (Slope_Score × 0.10) +
+                    (Human_Score × 0.05)
 ```
 
 **Weights Rationale**:
-- Water is critical in South Sudan's semi-arid context (40%)
-- Vegetation/grazing quality is equally important (40%)
-- Convergence potential amplifies risk (20%)
+- Water is critical in South Sudan's semi-arid context, especially during the dry season
+- Vegetation/grazing quality is equally important, and dominates during the wet season
+- Habitat type and slope provide structural suitability constraints
+- Human influence (population density) has a small negative weight in high-density areas
 
 Note: These weights should be calibrated using historical movement data and conflict event locations.
+
+### 5. Classification into Risk Classes
+
+The continuous likelihood surface (0–1) is converted into four discrete risk classes using a deterministic additive threshold approach:
+
+| Class | Label        | Likelihood range          |
+|:-----:|:-------------|:--------------------------|
+| 0     | Excluded     | likelihood = 0 (masked)   |
+| 1     | Low          | 0 < likelihood < 0.3     |
+| 2     | Medium-Low   | 0.3 ≤ likelihood < 0.5   |
+| 3     | Medium-High  | 0.5 ≤ likelihood < 0.7   |
+| 4     | High         | likelihood ≥ 0.7         |
+
+The implementation uses additive Boolean gates to guarantee that every pixel falls into exactly one class with no gaps or overlaps:
+
+```
+class = gt(0) + gte(0.3) + gte(0.5) + gte(0.7)
+```
+
+This is encapsulated in a reusable `classifyLikelihood()` function in the GEE script.
 
 ## Spatial and Temporal Scope
 
@@ -181,6 +215,6 @@ See [limitations.md](limitations.md) for detailed discussion.
 
 ---
 
-**Document Version**: 1.0  
+**Document Version**: 1.1  
 **Last Updated**: February 2026  
 **Contact**: See main README for contact information

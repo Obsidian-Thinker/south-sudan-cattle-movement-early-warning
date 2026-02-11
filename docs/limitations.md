@@ -113,16 +113,32 @@ This document provides a transparent assessment of the limitations, uncertaintie
 
 ### 6. Model Calibration Uncertainty
 
-**Limitation**: Weights in the risk formula (water 40%, vegetation 40%, convergence 20%) are theoretical, not empirically derived.
+**Limitation**: Seasonal weights and classification thresholds are theoretical, not empirically derived.
 
-**Current Formula**:
+**Current Implementation**:
+
+*Seasonal weights* (dry / wet season):
 ```
-Movement_Risk = (Water_Scarcity × 0.4) + (Vegetation_Stress × 0.4) + (Convergence_Potential × 0.2)
+Water:   0.45 / 0.25
+Forage:  0.25 / 0.40
+Habitat: 0.15 / 0.15
+Slope:   0.10 / 0.10
+Human:   0.05 / 0.05
 ```
+
+*Classification thresholds*:
+| Class | Label        | Range               |
+|:-----:|:-------------|:--------------------|
+| 0     | Excluded     | likelihood = 0      |
+| 1     | Low          | 0 < l < 0.3        |
+| 2     | Medium-Low   | 0.3 ≤ l < 0.5      |
+| 3     | Medium-High  | 0.5 ≤ l < 0.7      |
+| 4     | High         | l ≥ 0.7            |
 
 **Issues**:
 - No ground truth cattle movement data to optimize weights
 - Weights may vary by season, region, or community
+- Class boundaries (0.3, 0.5, 0.7) are evenly spaced but not empirically justified
 - Threshold for "high risk" is arbitrary
 
 **Research Needs**:
@@ -315,6 +331,6 @@ By acknowledging these limitations, we can use the model responsibly as part of 
 
 ---
 
-**Document Version**: 1.0  
+**Document Version**: 1.1  
 **Last Updated**: February 2026  
 **See Also**: [methodology.md](methodology.md), [ethics.md](ethics.md)
