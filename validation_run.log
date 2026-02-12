@@ -1,0 +1,90 @@
+======================================================================
+SOUTH SUDAN EARLY WARNING SYSTEM - VALIDATION ANALYSIS
+======================================================================
+
+Filled missing EWI values: 17/17 rows
+
+Dataset loaded: 20 samples
+  Conflicts: 5
+  Non-conflicts: 15
+
+======================================================================
+1. EARLY WARNING INDEX (EWI) PERFORMANCE
+======================================================================
+
+✓ ROC-AUC Score: 0.907
+  Interpretation: EXCELLENT - Strong predictive power
+
+----------------------------------------------------------------------
+PERFORMANCE AT DIFFERENT THRESHOLDS:
+----------------------------------------------------------------------
+Threshold    Precision    Recall       F1-Score     Accuracy    
+----------------------------------------------------------------------
+0.4          1.000        0.800        0.889        0.950       
+0.5          1.000        0.200        0.333        0.800       
+0.6          0.000        0.000        0.000        0.750       
+0.7          0.000        0.000        0.000        0.750       
+----------------------------------------------------------------------
+Precision = When model says 'high risk', how often is it right?
+Recall = Of all conflicts, how many did we detect?
+F1 = Balanced metric (harmonic mean of precision & recall)
+
+✓ Optimal threshold: 0.406
+
+======================================================================
+2. COMPONENT PERFORMANCE (INDIVIDUAL INDICATORS)
+======================================================================
+
+Component                 AUC        Mean@Conflict   Mean@NoConflict
+----------------------------------------------------------------------
+Cattle Convergence        0.613      0.429           0.422          
+Conflict Risk             1.000      0.268           0.000          
+Resource Stress           0.427      0.691           0.709          
+Water Score               0.747      0.056           0.042          
+Forage Score              0.520      0.689           0.664          
+
+======================================================================
+3. PRIORITY ZONE CLASSIFICATION VALIDATION
+======================================================================
+
+Priority Class       Total Samples   Conflicts    Conflict %  
+----------------------------------------------------------------------
+WATCH                1               1            100.0       %
+STABLE               19              4            21.1        %
+
+======================================================================
+4. GENERATING VISUALIZATIONS
+======================================================================
+
+✓ Saved: validation_results.png
+
+======================================================================
+5. VALIDATION SUMMARY
+======================================================================
+
+MODEL PERFORMANCE SUMMARY
+-------------------------
+Overall AUC: 0.907
+Optimal Threshold: 0.406
+
+At Optimal Threshold:
+  Precision: 1.000 (When predicting conflict, correct 100.0% of time)
+  Recall: 0.800 (Detecting 80.0% of actual conflicts)
+  F1-Score: 0.889
+  
+Confusion Matrix:
+  True Negatives:    15 (Correctly predicted no conflict)
+  False Positives:    0 (False alarms)
+  False Negatives:    1 (Missed conflicts - CRITICAL)
+  True Positives:     4 (Correctly predicted conflict)
+
+OPERATIONAL RECOMMENDATIONS
+----------------------------
+
+✓ DEPLOY: Model ready for operational use
+  - Use for resource allocation and early warning
+  - Monitor false positives and adjust threshold if needed
+
+======================================================================
+VALIDATION COMPLETE
+======================================================================
