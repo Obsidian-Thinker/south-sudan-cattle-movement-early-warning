@@ -119,10 +119,23 @@ print(f"\n{'Component':<25} {'AUC':<10} {'Mean@Conflict':<15} {'Mean@NoConflict'
 print("-"*70)
 
 for name, col in components.items():
-    auc_comp = roc_auc_score(df['conflict_occurred'], df[col])
-    mean_conflict = df[df['conflict_occurred']==1][col].mean()
-    mean_no_conflict = df[df['conflict_occurred']==0][col].mean()
-    print(f"{name:<25} {auc_comp:<10.3f} {mean_conflict:<15.3f} {mean_no_conflict:<15.3f}")
+    # Compute AUC only on rows where the component has valid (non-NaN) values
+    valid_mask = df[col].notna()
+    if valid_mask.sum() == 0 or df.loc[valid_mask, 'conflict_occurred'].nunique() < 2:
+        auc_comp = np.nan
+    else:
+        auc_comp = roc_auc_score(df.loc[valid_mask, 'conflict_occurred'], df.loc[valid_mask, col])
+
+    mean_conflict = df[df['conflict_occurred'] == 1][col].mean()
+    mean_no_conflict = df[df['conflict_occurred'] == 0][col].mean()
+
+    # Nicely format AUC, show 'N/A' if not computable
+    if np.isnan(auc_comp):
+        auc_str = 'N/A'
+    else:
+        auc_str = f"{auc_comp:.3f}"
+
+    print(f"{name:<25} {auc_str:<10} {mean_conflict:<15.3f} {mean_no_conflict:<15.3f}")
 
 # ============================================================================
 # 3. PRIORITY ZONE VALIDATION
